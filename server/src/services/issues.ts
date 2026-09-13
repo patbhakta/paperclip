@@ -4448,6 +4448,33 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
   }, 0);
 }
 
+/**
+ * A run woken without issue context (e.g. `heartbeat_timer`) has no source issue
+ * in its context snapshot, so the cross-issue influence guard fails every issue
+ * write closed — including writes to the issue the run just checked out. Stamping
+ * the checked-out issue into the snapshot scopes the run exactly like a task wake
+ * and only relaxes the guard for the issue this run now owns. Runs already scoped
+ * to another issue are left untouched so cross-issue writes stay guarded.
+ */
+async function backfillRunSourceIssueOnCheckout(db: Db, checkoutRunId: string, issueId: string) {
+  try {
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ issueId })}::jsonb`,
+      })
+      .where(and(
+        eq(heartbeatRuns.id, checkoutRunId),
+        isNull(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`),
+        isNull(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`),
+      ));
+  } catch (error) {
+    // Checkout must not fail because of the backfill; the guard's fail-closed
+    // behavior is the safe fallback if the stamp is missing.
+    logger.warn({ error, checkoutRunId, issueId }, "failed to stamp checked-out issue into run context snapshot");
+  }
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -8139,6 +8166,12 @@ export function issueService(db: Db) {
       }),
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+      const stampAndReturn = async <T extends { id: string }>(checkedOut: T | null) => {
+        if (checkedOut && checkoutRunId) {
+          await backfillRunSourceIssueOnCheckout(db, checkoutRunId, checkedOut.id);
+        }
+        return checkedOut;
+      };
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -8214,7 +8247,7 @@ export function issueService(db: Db) {
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);
-        return enriched;
+        return stampAndReturn(enriched);
       }
 
       const current = await db
@@ -8256,7 +8289,7 @@ export function issueService(db: Db) {
           )
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (adopted) return adopted;
+        return stampAndReturn(adopted);
       }
 
       if (
@@ -8276,7 +8309,7 @@ export function issueService(db: Db) {
           const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
           if (!row) throw notFound("Issue not found");
           const [enriched] = await withIssueLabels(db, [row]);
-          return enriched;
+          return stampAndReturn(enriched);
         }
       }
 
@@ -8315,12 +8348,12 @@ export function issueService(db: Db) {
                 or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
               ),
             )
-            .returning()
-            .then((rows) => rows[0] ?? null);
-          if (adopted) {
-            const [enriched] = await withIssueLabels(db, [adopted]);
-            return enriched;
-          }
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (adopted) {
+          const [enriched] = await withIssueLabels(db, [adopted]);
+          return stampAndReturn(enriched);
+        }
         }
       }
 
@@ -8333,7 +8366,7 @@ export function issueService(db: Db) {
         const row = await db.select().from(issues).where(eq(issues.id, id)).then((rows) => rows[0] ?? null);
         if (!row) throw notFound("Issue not found");
         const [enriched] = await withIssueLabels(db, [row]);
-        return enriched;
+        return stampAndReturn(enriched);
       }
 
       throw conflict("Issue checkout conflict", {
