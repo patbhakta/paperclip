@@ -113,4 +113,57 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_observed")).toHaveLength(20);
     expect(recorded.filter((row) => row.action === "issue.cross_issue_influence_cap_rejected")).toHaveLength(1);
   });
+
+  it("counts writes from a task-less run (no contextSnapshot issueId) against the cap", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const targetIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Timer Sweeper",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // Timer-sourced wake: no issueId/taskId in the run context snapshot.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "board-user",
+      contextSnapshot: { wakeReason: "timer" },
+    });
+
+    const decision = await observeCrossIssueInfluence(db, {
+      companyId,
+      runId,
+      agentId,
+      targetIssueId,
+      targetIssueIdentifier: "CAP-3",
+      kind: "update",
+      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+    });
+
+    expect(decision).toMatchObject({ allowed: true, mode: "enforce", count: 1, cap: 20 });
+
+    const recorded = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.runId, runId)));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.action).toBe("issue.cross_issue_influence_observed");
+    expect(recorded[0]?.details).toMatchObject({ sourceIssueId: null, targetIssueId, kind: "update" });
+  });
 });

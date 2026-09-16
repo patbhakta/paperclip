@@ -109,11 +109,17 @@ export async function observeCrossIssueInfluence(
       throw crossIssueInfluenceRunContextError();
     }
 
+    // Task-less runs (timer/routine wakes with no PAPERCLIP_TASK_ID) carry no
+    // issueId/taskId in contextSnapshot by design. They are legitimate, so a
+    // missing source issue must not fail closed: every issue write they make is
+    // cross-issue by definition and counts against the shared cap (HU-2036,
+    // restored for HU-2943). A missing, wrong-company, or wrong-agent run row
+    // still fails closed above.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
     if (
-      sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      sourceIssueId &&
+      (sourceIssueId === input.targetIssueId ||
+        (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
     }

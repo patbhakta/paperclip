@@ -198,7 +198,7 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  it("counts task-less run writes against the cap instead of failing closed (HU-2943)", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -207,10 +207,25 @@ describe("cross-issue influence limit rollout", () => {
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
+    })).resolves.toMatchObject({ allowed: true, mode: "enforce", count: 1, cap: 20 });
+    expect(fake.inserted).toHaveLength(1);
+    expect(fake.inserted[0]?.details).toMatchObject({
+      sourceIssueId: null,
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "update",
     });
-    expect(fake.inserted).toEqual([]);
+  });
+
+  it("still caps task-less runs at the shared cross-issue limit", async () => {
+    const fake = counterDb(20, { contextSnapshot: null });
+
+    await expect(observeCrossIssueInfluence(fake.db as never, {
+      companyId: "22222222-2222-4222-8222-222222222222",
+      runId: "11111111-1111-4111-8111-111111111111",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      targetIssueId: "55555555-5555-4555-8555-555555555555",
+      kind: "comment",
+    })).resolves.toMatchObject({ allowed: false, mode: "enforce", count: 21, cap: 20 });
+    expect(fake.inserted[0]?.action).toBe("issue.cross_issue_influence_cap_rejected");
   });
 });
