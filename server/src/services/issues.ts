@@ -7425,16 +7425,18 @@ export function issueService(db: Db) {
           .from(issues)
           .where(eq(issues.companyId, companyId));
         const currentMax = maxRow?.maxNum ?? 0;
+        // Atomic allocation (audit F03, 2026-10-06): the UPDATE takes the row lock,
+        // self-heals a drifted counter, and returns the post-reservation value in one
+        // statement - concurrent imports/creates can no longer reserve overlapping ranges.
         const [company] = await tx
-          .select({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix })
-          .from(companies)
-          .where(eq(companies.id, companyId));
-        if (!company) throw notFound("Target company not found");
-        const base = Math.max(company.issueCounter ?? 0, currentMax);
-        await tx
           .update(companies)
-          .set({ issueCounter: base + rows.length })
-          .where(eq(companies.id, companyId));
+          .set({
+            issueCounter: sql`greatest(${companies.issueCounter}, ${currentMax}) + ${rows.length}`,
+          })
+          .where(eq(companies.id, companyId))
+          .returning({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix });
+        if (!company) throw notFound("Target company not found");
+        const base = company.issueCounter - rows.length;
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const defaultGoalId = defaultCompanyGoal?.id ?? null;
