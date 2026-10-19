@@ -31,6 +31,13 @@ describe("agent invokability", () => {
     },
   );
 
+  it("reports invalid chains for paused manual wakes", () => {
+    const target = agent({ id: "paused", status: "paused", reportsTo: "missing" });
+    expect(evaluateAgentInvokability(target, [target], "on_demand")).toMatchObject({
+      invokable: false, reason: "manager_missing", invalidOrgChain: true,
+    });
+  });
+
   it("blocks active descendants under a terminated manager as invalid-org-chain", () => {
     const rows = [
       agent({ id: "ceo", status: "terminated" }),
