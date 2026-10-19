@@ -16,6 +16,21 @@ function agent(partial: Partial<AgentOrgRow> & Pick<AgentOrgRow, "id">): AgentOr
 }
 
 describe("agent invokability", () => {
+  it.each(["timer", "assignment", "automation", "on_demand"])(
+    "checks paused invocation source (%s)", (source) => {
+      const target = agent({ id: "paused", status: "paused" });
+      expect(evaluateAgentInvokability(target, [target], source).invokable)
+        .toBe(source === "on_demand");
+    },
+  );
+
+  it.each(["terminated", "pending_approval"] as const)(
+    "keeps %s blocked for manual invocation", (status) => {
+      const target = agent({ id: "blocked", status });
+      expect(evaluateAgentInvokability(target, [target], "on_demand").invokable).toBe(false);
+    },
+  );
+
   it("blocks active descendants under a terminated manager as invalid-org-chain", () => {
     const rows = [
       agent({ id: "ceo", status: "terminated" }),

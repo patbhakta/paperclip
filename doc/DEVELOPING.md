@@ -2771,3 +2771,10 @@ Storybook: **Skills → Project repository skills**. Its production UI journeys 
 in-memory provider and execution fixtures. Live GitHub refresh and execution need
 separate acceptance evidence. Run the focused browser suite against built Storybook,
 or set `STORYBOOK_TEST_BASE_URL` to an owned Storybook dev server.
+
+### Paused agent manual wakes
+
+A paused agent remains assignable. It accepts an explicit `on_demand` wake when
+`heartbeat.wakeOnDemand` is enabled, subject to budget and reporting-chain gates.
+Timer, assignment, and automation wakes remain suppressed. A manual run preserves
+the paused status through execution and completion; it does not resume timers.

@@ -73,7 +73,9 @@ export function isAgentStatusAssignableToWork(status: AgentStatus | string): boo
   return ASSIGNABLE_AGENT_STATUSES.has(status) && !NON_ASSIGNABLE_AGENT_STATUSES.has(status);
 }
 
-export function isAgentStatusInvokable(status: AgentStatus | string): boolean {
+export function isAgentStatusInvokable(status: AgentStatus | string, source?: string): boolean {
+  // A manual wake does not resume automatic work.
+  if (status === "paused" && source === "on_demand") return true;
   return INVOKABLE_AGENT_STATUSES.has(status) && !NON_INVOKABLE_AGENT_STATUSES.has(status);
 }
 
@@ -221,6 +223,7 @@ export function getAgentOrgChainHealth(input: {
 }
 
 export function getAgentWorkEligibility(input: {
+  source?: string;
   agent: AgentEligibilityAgent;
   agents: AgentEligibilityAgent[];
 }): AgentWorkEligibility {
@@ -234,7 +237,7 @@ export function getAgentWorkEligibility(input: {
     : orgChainHealth.status === "invalid_org_chain"
       ? "invalid_org_chain"
       : "eligible";
-  const invokabilityReason: AgentEligibilityLifecycleReason = !isAgentStatusInvokable(input.agent.status)
+  const invokabilityReason: AgentEligibilityLifecycleReason = !isAgentStatusInvokable(input.agent.status, input.source)
     ? input.agent.status === "terminated"
       ? "terminated"
       : input.agent.status === "pending_approval"
@@ -263,6 +266,7 @@ export function isAgentAssignableToWork(input: {
 }
 
 export function isAgentInvokable(input: {
+  source?: string;
   agent: AgentEligibilityAgent;
   agents: AgentEligibilityAgent[];
 }): boolean {

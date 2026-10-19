@@ -978,8 +978,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // Keep accepted work in the durable queue until setup completes.
     if (isAgentAwaitingSetup(agent)) return null;
     const invokability = companyAgents
-      ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
-      : await getAgentInvokability(agent);
+      ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents, run.invocationSource)
+      : await getAgentInvokability(agent, run.invocationSource);
     if (!invokability.invokable) {
       await cancelRunInternal(
         run.id,
@@ -1905,7 +1905,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      const invokability = await getAgentInvokability(agent);
+      // Each queued run is checked again with its own invocation source.
+      const invokability = await getAgentInvokability(agent, "on_demand");
       if (!invokability.invokable) {
         if (shouldCancelRunsForNonInvokableAgent(invokability)) {
           cancellationReason = `Cancelled because the agent is not invokable: ${invokability.reason}`;
@@ -2568,7 +2569,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
 
     // Setup delays execution, but must not discard work accepted by a caller.
-    const invokability = await getAgentInvokability(isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent);
+    const invokability = await getAgentInvokability(isAgentAwaitingSetup(agent) ? { ...agent, status: "idle" } : agent, source);
     if (!invokability.invokable) {
       if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
         await writeSkippedRequest("agent.not_invokable", {

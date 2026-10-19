@@ -83,7 +83,7 @@ export interface HeartbeatRetryDependencies {
   ) => Promise<Awaited<ReturnType<HeartbeatRunState["getRun"]>> | null | undefined>;
   resolveSessionBeforeForWakeup: HeartbeatRunState["resolveSessionBeforeForWakeup"];
   resolveResponsibleUserIdForRunContext: ReturnType<typeof createHeartbeatRunPreparation>["resolveResponsibleUserIdForRunContext"];
-  getAgentInvokability: (agent: typeof agents.$inferSelect | null | undefined) => ReturnType<typeof evaluateAgentInvokabilityFromDb>;
+  getAgentInvokability: (agent: typeof agents.$inferSelect | null | undefined, source?: string) => ReturnType<typeof evaluateAgentInvokabilityFromDb>;
   appendRunEvent: (run: HeartbeatRun, event: {
     eventType: string;
     stream?: "system" | "stdout" | "stderr";

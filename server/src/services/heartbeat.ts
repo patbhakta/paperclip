@@ -1496,8 +1496,9 @@ export function heartbeatService(
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   async function getAgentInvokability(
     agent: typeof agents.$inferSelect | null | undefined,
+    source?: string,
   ) {
-    return evaluateAgentInvokabilityFromDb(db, agent);
+    return evaluateAgentInvokabilityFromDb(db, agent, source);
   }
 
   const {
@@ -3147,15 +3148,20 @@ export function heartbeatService(
           .then((rows) => rows[0] ?? null);
         if (runningWithSession) run = runningWithSession;
 
-        // Pause Durability: flip to "running" ONLY if the agent is still invokable.
+        // Manual wakes preserve pause so completion cannot resume automatic work.
         // Atomic conditional UPDATE is the sole gate (no read-then-write); 0 rows => abort.
         const runningAgent = await db
           .update(agents)
-          .set({ status: "running", updatedAt: new Date() })
+          .set({
+            status: sql`case when ${agents.status} = 'paused' then 'paused' else 'running' end`,
+            updatedAt: new Date(),
+          })
           .where(
             and(
               eq(agents.id, agent.id),
-              notInArray(agents.status, [...DIRECT_NON_INVOKABLE_STATUSES]),
+              notInArray(agents.status, [...DIRECT_NON_INVOKABLE_STATUSES].filter(
+                (status) => status !== "paused" || run.invocationSource !== "on_demand",
+              )),
               eq(agents.lifecycleState, "ready"),
             ),
           )
