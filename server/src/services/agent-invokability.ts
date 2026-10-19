@@ -73,12 +73,14 @@ function invalidChainReason(health: AgentOrgChainHealth): AgentInvokabilityBlock
 export function evaluateAgentInvokability(
   agent: AgentOrgRow | null | undefined,
   companyAgents: AgentOrgRow[],
+  source?: string,
 ): AgentInvokability {
   if (!agent) {
     return blocked("missing", "Agent no longer exists", {}, false);
   }
 
   const eligibility = getAgentWorkEligibility({
+    source,
     agent: toEligibilityAgent(agent),
     agents: companyAgents.map(toEligibilityAgent),
   });
@@ -87,7 +89,9 @@ export function evaluateAgentInvokability(
 
   const directStatusReason = eligibility.invokabilityReason === "unknown_status"
     ? "unknown_status"
-    : statusBlockReason(agent.status);
+    : eligibility.invokabilityReason === "invalid_org_chain"
+      ? null
+      : statusBlockReason(agent.status);
   if (directStatusReason) {
     return blocked(
       directStatusReason,
@@ -118,6 +122,7 @@ export function evaluateAgentInvokability(
 export async function evaluateAgentInvokabilityFromDb(
   db: Db,
   agent: AgentOrgRow | null | undefined,
+  source?: string,
 ): Promise<AgentInvokability> {
   if (!agent) return evaluateAgentInvokability(agent, []);
   const companyAgents = await db
@@ -130,7 +135,7 @@ export async function evaluateAgentInvokabilityFromDb(
     })
     .from(agents)
     .where(eq(agents.companyId, agent.companyId));
-  return evaluateAgentInvokability(agent, companyAgents);
+  return evaluateAgentInvokability(agent, companyAgents, source);
 }
 
 export function listInvalidOrgChainDescendantIds(

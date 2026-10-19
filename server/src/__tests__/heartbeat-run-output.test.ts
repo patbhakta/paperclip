@@ -60,6 +60,51 @@ describePostgres("heartbeat output through adapter dispatch and finalization", (
     return { finished, entries };
   }
 
+  it("runs a manual wake while paused and preserves pause after completion", async () => {
+    let calls = 0;
+    const f = await seed(async () => {
+      calls += 1;
+      const [current] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+      expect(current!.status).toBe("paused");
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    const { finished } = await execute(f);
+    expect(finished.status, finished.error ?? undefined).toBe("succeeded");
+    expect(calls).toBe(1);
+    const [current] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    expect(current!.status).toBe("paused");
+  });
+
+  it.each(["timer", "assignment", "automation"] as const)(
+    "rejects a paused %s wake before adapter dispatch", async (source) => {
+      const dispatch = vi.fn(async () => {});
+      const f = await seed(dispatch);
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+      await expect(heartbeat.wakeup(f.agentId, { source, triggerDetail: "system" }))
+        .rejects.toThrow("not invokable");
+      expect(dispatch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps wakeOnDemand disabled for a paused manual wake", async () => {
+    const dispatch = vi.fn(async () => {});
+    const f = await seed(dispatch);
+    await db.update(agents).set({ status: "paused", runtimeConfig: { heartbeat: { wakeOnDemand: false } } })
+      .where(eq(agents.id, f.agentId));
+    expect(await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual" })).toBeNull();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("keeps budget-paused agents blocked for manual wakes", async () => {
+    const dispatch = vi.fn(async () => {});
+    const f = await seed(dispatch);
+    await db.update(agents).set({ status: "paused", pauseReason: "budget", pausedAt: new Date() })
+      .where(eq(agents.id, f.agentId));
+    await expect(heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual" }))
+      .rejects.toThrow("Budget pause requires a policy or an explicit operator resume");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("redacts stored and live chunks, preserves sequence, and flushes the last output at completion", async () => {
     const secret = "output-test-bearer-canary";
     const f = await seed(async input => {

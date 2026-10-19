@@ -64,6 +64,20 @@ describe("agent work eligibility", () => {
     });
   });
 
+  it.each([undefined, "timer", "assignment", "automation", "on_demand"])(
+    "permits paused invocation only for an explicit manual source (%s)", (source) => {
+      const target = agent({ status: "paused", reportsTo: null });
+      expect(getAgentWorkEligibility({ agent: target, agents: [target], source }).invokable)
+        .toBe(source === "on_demand");
+    },
+  );
+
+  it("keeps invalid reporting chains blocked for manual paused wakes", () => {
+    const target = agent({ status: "paused" });
+    expect(getAgentWorkEligibility({ agent: target, agents: [target], source: "on_demand" }))
+      .toMatchObject({ invokable: false, invokabilityReason: "invalid_org_chain" });
+  });
+
   it("reports unknown lifecycle statuses explicitly", () => {
     const target = agent({ status: "sabbatical" });
     const manager = agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: null });
