@@ -95,6 +95,16 @@ describePostgres("heartbeat output through adapter dispatch and finalization", (
     expect(dispatch).not.toHaveBeenCalled();
   });
 
+  it("keeps budget-paused agents blocked for manual wakes", async () => {
+    const dispatch = vi.fn(async () => {});
+    const f = await seed(dispatch);
+    await db.update(agents).set({ status: "paused", pauseReason: "budget", pausedAt: new Date() })
+      .where(eq(agents.id, f.agentId));
+    await expect(heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual" }))
+      .rejects.toThrow("Budget pause requires a policy or an explicit operator resume");
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("redacts stored and live chunks, preserves sequence, and flushes the last output at completion", async () => {
     const secret = "output-test-bearer-canary";
     const f = await seed(async input => {
