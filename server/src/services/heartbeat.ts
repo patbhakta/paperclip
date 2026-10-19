@@ -303,6 +303,7 @@ import {
   inArray,
   isNull,
   notInArray,
+  ne,
   or,
   sql,
 } from "drizzle-orm";
@@ -3160,8 +3161,10 @@ export function heartbeatService(
             and(
               eq(agents.id, agent.id),
               notInArray(agents.status, [...DIRECT_NON_INVOKABLE_STATUSES].filter(
-                (status) => status !== "paused" || run.invocationSource !== "on_demand",
+                (status) => status !== "paused" || run.invocationSource !== "on_demand" || agent.status !== "paused",
               )),
+              // A budget pause during preparation must stop even a manual wake.
+              or(isNull(agents.pauseReason), ne(agents.pauseReason, "budget")),
               eq(agents.lifecycleState, "ready"),
             ),
           )
