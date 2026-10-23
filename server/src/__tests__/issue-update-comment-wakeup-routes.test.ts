@@ -563,6 +563,69 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  // HU-3261: a local-CLI agent posting under board auth from its own run must
+  // not re-wake itself, or a posting loop re-submits the same long body.
+  it.each([
+    { method: "post", runAgentId: ASSIGNEE_AGENT_ID, expectAssigneeWake: false },
+    { method: "patch", runAgentId: ASSIGNEE_AGENT_ID, expectAssigneeWake: false },
+    { method: "post", runAgentId: PREVIOUS_AGENT_ID, expectAssigneeWake: true },
+    { method: "patch", runAgentId: PREVIOUS_AGENT_ID, expectAssigneeWake: true },
+  ] as const)(
+    "routes $method board-auth comment wakes by source run owner ($runAgentId)",
+    async ({ method, runAgentId, expectAssigneeWake }) => {
+      const sourceRunId = "44444444-4444-4444-8444-444444444444";
+      const observerAgentId = "77777777-7777-4777-8777-777777777777";
+      const longBody = `MOMENTUM SIGNAL LANDED ${"x".repeat(1400)} [@Observer](agent://${observerAgentId})`;
+      const existing = makeIssue({
+        assigneeAgentId: ASSIGNEE_AGENT_ID,
+        assigneeUserId: null,
+        status: "in_progress",
+      });
+      mockIssueService.getById.mockResolvedValue(existing);
+      mockIssueService.update.mockResolvedValue(existing);
+      mockIssueService.addComment.mockResolvedValue({
+        id: "comment-cli-loop",
+        issueId: existing.id,
+        companyId: existing.companyId,
+        body: longBody,
+        createdByRunId: sourceRunId,
+      });
+      // The observer mention gives the async wake block an observable completion point.
+      mockIssueService.findMentionedAgents.mockResolvedValue([observerAgentId]);
+      mockHeartbeatService.getRun.mockResolvedValue({
+        id: sourceRunId,
+        companyId: existing.companyId,
+        agentId: runAgentId,
+        status: "running",
+        contextSnapshot: { issueId: existing.id },
+      });
+
+      const app = await createApp();
+      const res = method === "post"
+        ? await request(app)
+          .post(`/api/issues/${existing.id}/comments`)
+          .set("X-Paperclip-Run-Id", sourceRunId)
+          .send({ body: longBody })
+        : await request(app)
+          .patch(`/api/issues/${existing.id}`)
+          .set("X-Paperclip-Run-Id", sourceRunId)
+          .send({ comment: longBody });
+
+      expect(res.status).toBe(method === "post" ? 201 : 200);
+      await vi.waitFor(() => {
+        expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+          observerAgentId,
+          expect.objectContaining({ reason: "issue_comment_mentioned" }),
+        );
+      });
+      const assigneeCommentWakes = mockHeartbeatService.wakeup.mock.calls.filter(
+        ([agentId, wakeup]: [string, { reason?: string }]) =>
+          agentId === ASSIGNEE_AGENT_ID && wakeup?.reason === "issue_commented",
+      );
+      expect(assigneeCommentWakes).toHaveLength(expectAssigneeWake ? 1 : 0);
+    },
+  );
+
   it("tags the wake when a board comment supersedes the last review interaction", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,

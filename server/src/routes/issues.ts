@@ -2816,6 +2816,21 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const commentWasCreatedByAssigneeRun = async (
+    comment: { companyId: string; createdByRunId?: string | null },
+    assigneeAgentId: string | null | undefined,
+  ) => {
+    // Local-CLI agents authenticate through the board while still stamping the
+    // real source run on the comment. Treat that durable provenance as the
+    // author identity for wake routing; otherwise each comment re-wakes the
+    // assignee and a posting loop re-submits the same body (HU-3261).
+    if (!comment.createdByRunId || !assigneeAgentId) return false;
+    const sourceRun = await heartbeat.getRun(comment.createdByRunId).catch(() => null);
+    return (
+      sourceRun?.companyId === comment.companyId &&
+      sourceRun.agentId === assigneeAgentId
+    );
+  };
   const enqueueStalledReviewDecisionWakeup = opts.stalledReviewDecisionEnqueueWakeup ?? heartbeat.wakeup;
   const enqueueRecoveryActionWakeup = opts.recoveryActionEnqueueWakeup ?? heartbeat.wakeup;
   const feedback = feedbackService(db);
@@ -10675,7 +10690,9 @@ export function issueRoutes(
       if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
-        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const selfComment =
+          (actorIsAgent && actor.actorId === assigneeId) ||
+          (await commentWasCreatedByAssigneeRun(comment, assigneeId));
         // Re-derive closed-ness from the post-update issue so a status change
         // like in_progress -> done with a closure comment does not enqueue a
         // stale issue_commented wake for an already-completed issue.
@@ -12687,7 +12704,9 @@ export function issueRoutes(
       })) ?? currentIssue;
       const assigneeId = wakeIssueSnapshot.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const selfComment =
+        (actorIsAgent && actor.actorId === assigneeId) ||
+        (await commentWasCreatedByAssigneeRun(comment, assigneeId));
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
