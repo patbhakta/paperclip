@@ -115,6 +115,31 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
     return app;
   }
 
+  it("preserves distinct long POST bodies instead of duplicating the previous comment", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const app = createApp(companyId);
+    const bodies = [
+      "Previous comment: short sentinel",
+      ...[89, 90, 91, 160, 1024, 8192].map((length) =>
+        `Body length ${length}: `.padEnd(length, "x")),
+      "Multiline update\n\n" + "A distinct paragraph. ".repeat(20),
+    ];
+    const ids = new Set<string>();
+    for (const body of bodies) {
+      const response = await request(app)
+        .post(`/api/issues/${issueId}/comments`)
+        .send({ body });
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      expect(response.body.body).toBe(body);
+      ids.add(response.body.id);
+    }
+    expect(ids.size).toBe(bodies.length);
+    const rows = await db.select().from(issueComments);
+    expect(rows).toHaveLength(bodies.length);
+    expect(rows.map((row) => row.body).sort()).toEqual([...bodies].sort());
+    expect(rows.every((row) => row.deletedAt === null)).toBe(true);
+  });
+
   it("redacts deleted comment bodies from ordinary reads, heartbeat context, and wake payloads", async () => {
     const { companyId, issueId } = await seedIssue();
     const commentId = randomUUID();
