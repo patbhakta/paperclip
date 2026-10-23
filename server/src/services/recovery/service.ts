@@ -10,6 +10,7 @@ import {
   type IssueCommentPresentation,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
+  type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -178,6 +179,7 @@ type StrandedRecoveryCause =
   | "workspace_validation_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
+  | "assignee_cross_company"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
 type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
@@ -213,6 +215,8 @@ function recoveryCauseTitle(cause: StrandedRecoveryCause) {
       return "configuration incomplete";
     case "execution_review_participant_recovery":
       return "reviewer recovery failed";
+    case "assignee_cross_company":
+      return "assignee belongs to another company";
     case "provider_quota":
       return "provider quota unavailable";
     case SUCCESSFUL_RUN_MISSING_STATE_REASON:
@@ -2171,6 +2175,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ? "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
         : recoveryCause === "execution_review_participant_recovery"
           ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
+        : recoveryCause === "assignee_cross_company"
+          ? "Board operator: reassign the issue to an agent in the issue's company, or move the work to an issue in the assignee's company."
         : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
       wakePolicy: isProviderQuotaWait
         ? {
@@ -3205,6 +3211,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     notice?: StrandedRecoveryNoticeSeed | null;
     recoveryCause?: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    unblockDescriptor?: IssueUnblockDescriptor | null;
   }) {
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
@@ -3237,6 +3244,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
+      ...(input.unblockDescriptor ? { unblockDescriptor: input.unblockDescriptor } : {}),
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3359,6 +3367,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             ? "recovery.reconcile_configuration_incomplete"
           : input.recoveryCause === "execution_review_participant_recovery"
             ? "recovery.reconcile_execution_review_participant"
+          : input.recoveryCause === "assignee_cross_company"
+            ? "recovery.reconcile_assignee_cross_company"
           : "recovery.reconcile_stranded_assigned_issue",
         recoveryCause: input.recoveryCause ?? "stranded_assigned_issue",
         latestRunId: input.latestRun?.id ?? null,
@@ -3529,6 +3539,41 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
+  async function escalateCrossCompanyAssignee(input: {
+    issue: typeof issues.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    latestRun: LatestIssueRun;
+  }) {
+    const companyRows = await db
+      .select({ id: companies.id, name: companies.name })
+      .from(companies)
+      .where(inArray(companies.id, [input.issue.companyId, input.agent.companyId]));
+    const companyName = (id: string) => companyRows.find((row) => row.id === id)?.name ?? id;
+    const issueCompanyName = companyName(input.issue.companyId);
+    const agentCompanyName = companyName(input.agent.companyId);
+    const agentInvokableInOwnCompany = await isAgentInvokable(input.agent);
+    const reason =
+      `Assignee ${input.agent.name} (\`${input.agent.id}\`) belongs to company ${agentCompanyName}, ` +
+      `but this issue belongs to company ${issueCompanyName}. ` +
+      "Agents can only check out and read issues in their own company, so a recovery wake cannot run.";
+    return escalateStrandedAssignedIssue({
+      issue: input.issue,
+      previousStatus: input.issue.status as StrandedPreviousStatus,
+      latestRun: input.latestRun,
+      recoveryCause: "assignee_cross_company",
+      comment:
+        `Paperclip cannot continue automatic recovery. ${reason} ` +
+        `The assignee is ${agentInvokableInOwnCompany ? "invokable" : "not invokable"} in its own company. ` +
+        "The source assignment is unchanged.",
+      unblockDescriptor: {
+        owner: "board",
+        action:
+          `${reason} Reassign the issue to an agent in ${issueCompanyName}, ` +
+          `or move the work to an issue in ${agentCompanyName}.`,
+      },
+    });
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
     const candidates = await db
       .select()
@@ -3584,9 +3629,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
 
       const agent = await getAgent(agentId);
-      const agentInvokable = agent && agent.companyId === issue.companyId
+      // Invokability is evaluated in the agent's own company scope. A healthy
+      // agent from another company still cannot run here: checkout and issue
+      // reads are company-scoped. Report that precisely instead of the generic
+      // "not invokable" escalation, which left the unblock descriptor empty.
+      const assigneeCrossCompany = Boolean(agent && agent.companyId !== issue.companyId);
+      const agentInvokable = agent && !assigneeCrossCompany
         ? await isAgentInvokable(agent)
         : false;
+      if (issue.status !== "in_review" && agent && assigneeCrossCompany) {
+        const updated = await escalateCrossCompanyAssignee({ issue, agent, latestRun });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
         if (
