@@ -87,12 +87,39 @@ function recordResponsibleUserDenialFromHttpError(
   });
 }
 
+// body-parser rejects oversized, malformed, or aborted bodies with an
+// http-errors object carrying a client status and a `type` such as
+// "entity.too.large"; surface those as-is instead of as a 500.
+function readBodyParserClientError(err: unknown): { status: number; type: string; message: string } | null {
+  if (!err || typeof err !== "object") return null;
+  const candidate = err as { status?: unknown; type?: unknown; expose?: unknown; message?: unknown };
+  if (typeof candidate.type !== "string" || candidate.expose !== true) return null;
+  if (typeof candidate.status !== "number" || candidate.status < 400 || candidate.status >= 500) return null;
+  return {
+    status: candidate.status,
+    type: candidate.type,
+    message: typeof candidate.message === "string" ? candidate.message : "Invalid request body",
+  };
+}
+
 export function errorHandler(
   err: unknown,
   req: Request,
   res: Response,
   _next: NextFunction,
 ) {
+  const bodyParserError = readBodyParserClientError(err);
+  if (bodyParserError) {
+    // A body timeout may already have answered with 408 before the parser
+    // noticed the aborted stream.
+    if (res.headersSent) return;
+    res.status(bodyParserError.status).json({
+      error: bodyParserError.status === 413 ? "Request body too large" : bodyParserError.message,
+      code: bodyParserError.type,
+    });
+    return;
+  }
+
   if (err instanceof HttpError) {
     const details = err.details && typeof err.details === "object" && !Array.isArray(err.details)
       ? err.details as Record<string, unknown>

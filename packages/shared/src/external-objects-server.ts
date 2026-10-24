@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { parseIssueReferenceHref } from "./issue-references.js";
+import { stripMarkdownCode, trimTrailingPunctuation } from "./markdown-scan.js";
 import type {
   ExternalObjectCanonicalIdentity,
   ExternalObjectCanonicalUrl,
@@ -9,86 +10,6 @@ import type {
 } from "./external-objects.js";
 
 const EXTERNAL_URL_TOKEN_RE = /https?:\/\/[^\s<>()]+/gi;
-
-function preserveNewlinesAsWhitespace(value: string) {
-  return value.replace(/[^\n]/g, " ");
-}
-
-function stripMarkdownCode(markdown: string): string {
-  if (!markdown) return "";
-
-  let output = "";
-  let index = 0;
-
-  while (index < markdown.length) {
-    const remaining = markdown.slice(index);
-    const fenceMatch = /^(?:```+|~~~+)/.exec(remaining);
-    const atLineStart = index === 0 || markdown[index - 1] === "\n";
-
-    if (atLineStart && fenceMatch) {
-      const fence = fenceMatch[0]!;
-      const blockStart = index;
-      index += fence.length;
-      while (index < markdown.length && markdown[index] !== "\n") index += 1;
-      if (index < markdown.length) index += 1;
-
-      while (index < markdown.length) {
-        const lineStart = index === 0 || markdown[index - 1] === "\n";
-        if (lineStart && markdown.startsWith(fence, index)) {
-          index += fence.length;
-          while (index < markdown.length && markdown[index] !== "\n") index += 1;
-          if (index < markdown.length) index += 1;
-          break;
-        }
-        index += 1;
-      }
-
-      output += preserveNewlinesAsWhitespace(markdown.slice(blockStart, index));
-      continue;
-    }
-
-    if (markdown[index] === "`") {
-      let tickCount = 1;
-      while (index + tickCount < markdown.length && markdown[index + tickCount] === "`") {
-        tickCount += 1;
-      }
-      const fence = "`".repeat(tickCount);
-      const inlineStart = index;
-      index += tickCount;
-      const closeIndex = markdown.indexOf(fence, index);
-      if (closeIndex === -1) {
-        output += markdown.slice(inlineStart, inlineStart + tickCount);
-        index = inlineStart + tickCount;
-        continue;
-      }
-      index = closeIndex + tickCount;
-      output += preserveNewlinesAsWhitespace(markdown.slice(inlineStart, index));
-      continue;
-    }
-
-    output += markdown[index]!;
-    index += 1;
-  }
-
-  return output;
-}
-
-function trimTrailingPunctuation(token: string): string {
-  let trimmed = token;
-  while (trimmed.length > 0) {
-    const last = trimmed[trimmed.length - 1]!;
-    if (!".,!?;:".includes(last) && last !== ")" && last !== "]") break;
-
-    if (
-      (last === ")" && (trimmed.match(/\(/g)?.length ?? 0) >= (trimmed.match(/\)/g)?.length ?? 0))
-      || (last === "]" && (trimmed.match(/\[/g)?.length ?? 0) >= (trimmed.match(/\]/g)?.length ?? 0))
-    ) {
-      break;
-    }
-    trimmed = trimmed.slice(0, -1);
-  }
-  return trimmed;
-}
 
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -182,8 +103,13 @@ export function extractExternalObjectCanonicalUrls(
 ): ExternalObjectCanonicalUrl[] {
   const seen = new Set<string>();
   const ordered: ExternalObjectCanonicalUrl[] = [];
+  // Canonicalizing parses the URL and hashes it twice; repeated links in a
+  // large body are common, so canonicalize each distinct text once.
+  const seenText = new Set<string>();
 
   for (const match of findExternalObjectUrlMatches(markdown)) {
+    if (seenText.has(match.matchedText)) continue;
+    seenText.add(match.matchedText);
     const canonical = canonicalizeExternalObjectUrl(match.matchedText, options);
     if (!canonical || seen.has(canonical.canonicalIdentityHash)) continue;
     seen.add(canonical.canonicalIdentityHash);

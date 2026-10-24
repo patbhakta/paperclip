@@ -9,12 +9,15 @@ const HEX_COLOR_RE = /^[0-9a-f]{6}$/i;
 const HEX_COLOR_SHORT_RE = /^[0-9a-f]{3}$/i;
 const HEX_COLOR_WITH_HASH_RE = /^#[0-9a-f]{6}$/i;
 const HEX_COLOR_SHORT_WITH_HASH_RE = /^#[0-9a-f]{3}$/i;
-const PROJECT_MENTION_LINK_RE = /\[[^\]]*]\((project:\/\/[^)\s]+)\)/gi;
-const AGENT_MENTION_LINK_RE = /\[[^\]]*]\((agent:\/\/[^)\s]+)\)/gi;
-const USER_MENTION_LINK_RE = /\[[^\]]*]\((user:\/\/[^)\s]+)\)/gi;
-const SKILL_MENTION_LINK_RE = /\[[^\]]*]\((skill:\/\/[^)\s]+)\)/gi;
-const ROUTINE_MENTION_LINK_RE = /\[[^\]]*]\((routine:\/\/[^)\s]+)\)/gi;
-const PIPELINE_MENTION_LINK_RE = /\[[^\]]*]\((pipeline:\/\/[^)\s]+)\)/gi;
+// Labels and hrefs exclude "[" so a failed match at one "[" cannot rescan the
+// rest of the body from every later "[" (quadratic on bracket-heavy bodies;
+// ALG-3397). Mention hrefs never contain "[".
+const PROJECT_MENTION_LINK_RE = /\[[^[\]]*]\((project:\/\/[^)\s[]+)\)/gi;
+const AGENT_MENTION_LINK_RE = /\[[^[\]]*]\((agent:\/\/[^)\s[]+)\)/gi;
+const USER_MENTION_LINK_RE = /\[[^[\]]*]\((user:\/\/[^)\s[]+)\)/gi;
+const SKILL_MENTION_LINK_RE = /\[[^[\]]*]\((skill:\/\/[^)\s[]+)\)/gi;
+const ROUTINE_MENTION_LINK_RE = /\[[^[\]]*]\((routine:\/\/[^)\s[]+)\)/gi;
+const PIPELINE_MENTION_LINK_RE = /\[[^[\]]*]\((pipeline:\/\/[^)\s[]+)\)/gi;
 const AGENT_ICON_NAME_RE = /^[a-z0-9-]+$/i;
 const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]*$/i;
 

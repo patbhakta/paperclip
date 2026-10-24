@@ -111,11 +111,17 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
-import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
+import {
+  COMMENT_JSON_BODY_LIMIT_BYTES,
+  DEFAULT_JSON_BODY_LIMIT,
+  PORTABLE_JSON_BODY_LIMIT,
+  requestBodyTimeout,
+} from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
 
 type UiMode = "none" | "static" | "vite-dev";
+const ISSUE_COMMENT_CREATE_API_PATH = "/api/issues/:id/comments";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
@@ -331,8 +337,13 @@ export async function createApp(
   // when the server may be reachable without a known reverse proxy in front.
   applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
 
+  app.use(requestBodyTimeout());
   app.use(COMPANY_IMPORT_API_PATH, express.json({
     limit: PORTABLE_JSON_BODY_LIMIT,
+    verify: captureRawBody,
+  }));
+  app.post(ISSUE_COMMENT_CREATE_API_PATH, express.json({
+    limit: COMMENT_JSON_BODY_LIMIT_BYTES,
     verify: captureRawBody,
   }));
   app.use(express.json({

@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_JSON_BODY_LIMIT,
+  MAX_COMMENT_BODY_CHARS,
   PORTABLE_JSON_BODY_LIMIT,
   PORTABLE_JSON_BODY_LIMIT_BYTES,
   PORTABLE_ZIP_UPLOAD_LIMIT_BYTES,
+  REQUEST_BODY_TIMEOUT_MS,
 } from "../http/body-limits.js";
 
 describe("HTTP body limits", () => {
@@ -51,5 +53,30 @@ describe("HTTP body limits", () => {
     const reloaded = await import("../http/body-limits.js");
     expect(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES).toBe(64 * 1024 * 1024 * 1024);
     expect(Number.isSafeInteger(reloaded.PORTABLE_ZIP_UPLOAD_LIMIT_BYTES * 4)).toBe(true);
+  });
+
+  it("lets operators set the JSON body ceiling via PAPERCLIP_JSON_BODY_LIMIT", async () => {
+    vi.stubEnv("PAPERCLIP_JSON_BODY_LIMIT", "5mb");
+    vi.resetModules();
+    expect((await import("../http/body-limits.js")).DEFAULT_JSON_BODY_LIMIT).toBe(5 * 1024 * 1024);
+    for (const raw of ["", "lots", "0", "-1mb"]) {
+      vi.stubEnv("PAPERCLIP_JSON_BODY_LIMIT", raw);
+      vi.resetModules();
+      expect((await import("../http/body-limits.js")).DEFAULT_JSON_BODY_LIMIT, `override ${JSON.stringify(raw)}`).toBe("10mb");
+    }
+  });
+
+  it("caps comment bodies at 256K characters unless overridden", async () => {
+    expect(MAX_COMMENT_BODY_CHARS).toBe(262_144);
+    vi.stubEnv("PAPERCLIP_MAX_COMMENT_BODY_CHARS", "1000000");
+    vi.resetModules();
+    expect((await import("../http/body-limits.js")).MAX_COMMENT_BODY_CHARS).toBe(1_000_000);
+  });
+
+  it("guards request bodies for 30s by default and allows disabling the guard", async () => {
+    expect(REQUEST_BODY_TIMEOUT_MS).toBe(30_000);
+    vi.stubEnv("PAPERCLIP_REQUEST_BODY_TIMEOUT_MS", "0");
+    vi.resetModules();
+    expect((await import("../http/body-limits.js")).REQUEST_BODY_TIMEOUT_MS).toBe(0);
   });
 });

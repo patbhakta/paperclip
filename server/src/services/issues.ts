@@ -65,7 +65,8 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, HttpError, notFound, payloadTooLarge, unprocessable } from "../errors.js";
+import { MAX_COMMENT_BODY_CHARS } from "../http/body-limits.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -4472,6 +4473,19 @@ async function backfillRunSourceIssueOnCheckout(db: Db, checkoutRunId: string, i
     // Checkout must not fail because of the backfill; the guard's fail-closed
     // behavior is the safe fallback if the stamp is missing.
     logger.warn({ error, checkoutRunId, issueId }, "failed to stamp checked-out issue into run context snapshot");
+  }
+}
+
+// Applied where untrusted comment text enters over HTTP. Server-generated
+// comments (heartbeat, recovery, watchdogs) are bounded by their producers and
+// must not fail mid-flow, so addComment itself does not enforce the cap.
+export function assertCommentBodyWithinLimit(body: string) {
+  if (body.length > MAX_COMMENT_BODY_CHARS) {
+    throw payloadTooLarge("Comment body too large", {
+      code: "comment_body_too_large",
+      maxChars: MAX_COMMENT_BODY_CHARS,
+      receivedChars: body.length,
+    });
   }
 }
 

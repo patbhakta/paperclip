@@ -4,6 +4,7 @@ import request from "supertest";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   companies,
   companyMemberships,
   createDb,
@@ -44,6 +45,7 @@ describeEmbeddedPostgres("deleted issue comment redaction", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(issueReferenceMentions);
     await db.delete(issueComments);
     await db.delete(issues);

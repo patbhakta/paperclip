@@ -1,3 +1,5 @@
+import { stripMarkdownCode, trimTrailingPunctuation } from "./markdown-scan.js";
+
 export const ISSUE_REFERENCE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/;
 
 export interface IssueReferenceMatch {
@@ -7,86 +9,23 @@ export interface IssueReferenceMatch {
   matchedText: string;
 }
 
-const ISSUE_REFERENCE_TOKEN_RE = /https?:\/\/[^\s<>()]+|\/[^\s<>()]+|[A-Z][A-Z0-9]*-\d+/gi;
+// Token grammar (leftmost alternative wins at each position):
+//   https?://[^\s<>()]+  |  /[^\s<>()]+  |  [A-Z][A-Z0-9]*-\d+   (case-insensitive)
+// The identifier alternative used to be a regex whose `[A-Z0-9]*` re-scanned the
+// rest of an alphanumeric run from every start position, which is quadratic on
+// long unbroken runs (a 1MB comment pinned the event loop; ALG-3397). The
+// scanner below matches the same tokens but measures each run only once.
+const URL_TOKEN_RE = /https?:\/\/[^\s<>()]+/iy;
+const PATH_TOKEN_RE = /\/[^\s<>()]+/y;
+const IDENTIFIER_SUFFIX_RE = /-\d+/y;
+const ISSUES_SEGMENT_HINT_RE = /issues/i;
 
-function preserveNewlinesAsWhitespace(value: string) {
-  return value.replace(/[^\n]/g, " ");
+function isAsciiLetter(code: number) {
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
-function stripMarkdownCode(markdown: string): string {
-  if (!markdown) return "";
-
-  let output = "";
-  let index = 0;
-
-  while (index < markdown.length) {
-    const remaining = markdown.slice(index);
-    const fenceMatch = /^(?:```+|~~~+)/.exec(remaining);
-    const atLineStart = index === 0 || markdown[index - 1] === "\n";
-
-    if (atLineStart && fenceMatch) {
-      const fence = fenceMatch[0]!;
-      const blockStart = index;
-      index += fence.length;
-      while (index < markdown.length && markdown[index] !== "\n") index += 1;
-      if (index < markdown.length) index += 1;
-
-      while (index < markdown.length) {
-        const lineStart = index === 0 || markdown[index - 1] === "\n";
-        if (lineStart && markdown.startsWith(fence, index)) {
-          index += fence.length;
-          while (index < markdown.length && markdown[index] !== "\n") index += 1;
-          if (index < markdown.length) index += 1;
-          break;
-        }
-        index += 1;
-      }
-
-      output += preserveNewlinesAsWhitespace(markdown.slice(blockStart, index));
-      continue;
-    }
-
-    if (markdown[index] === "`") {
-      let tickCount = 1;
-      while (index + tickCount < markdown.length && markdown[index + tickCount] === "`") {
-        tickCount += 1;
-      }
-      const fence = "`".repeat(tickCount);
-      const inlineStart = index;
-      index += tickCount;
-      const closeIndex = markdown.indexOf(fence, index);
-      if (closeIndex === -1) {
-        output += markdown.slice(inlineStart, inlineStart + tickCount);
-        index = inlineStart + tickCount;
-        continue;
-      }
-      index = closeIndex + tickCount;
-      output += preserveNewlinesAsWhitespace(markdown.slice(inlineStart, index));
-      continue;
-    }
-
-    output += markdown[index]!;
-    index += 1;
-  }
-
-  return output;
-}
-
-function trimTrailingPunctuation(token: string): string {
-  let trimmed = token;
-  while (trimmed.length > 0) {
-    const last = trimmed[trimmed.length - 1]!;
-    if (!".,!?;:".includes(last) && last !== ")" && last !== "]") break;
-
-    if (
-      (last === ")" && (trimmed.match(/\(/g)?.length ?? 0) >= (trimmed.match(/\)/g)?.length ?? 0))
-      || (last === "]" && (trimmed.match(/\[/g)?.length ?? 0) >= (trimmed.match(/\]/g)?.length ?? 0))
-    ) {
-      break;
-    }
-    trimmed = trimmed.slice(0, -1);
-  }
-  return trimmed;
+function isAsciiAlphanumeric(code: number) {
+  return isAsciiLetter(code) || (code >= 48 && code <= 57);
 }
 
 export function normalizeIssueIdentifier(value: string): string | null {
@@ -128,28 +67,67 @@ export function parseIssueReferenceHref(href: string): { identifier: string } | 
   return null;
 }
 
+function readTokenAt(text: string, index: number, identifierEnd: number): string | null {
+  const code = text.charCodeAt(index);
+  if (code === 104 || code === 72) {
+    URL_TOKEN_RE.lastIndex = index;
+    const url = URL_TOKEN_RE.exec(text);
+    if (url) return url[0];
+  } else if (code === 47) {
+    PATH_TOKEN_RE.lastIndex = index;
+    const path = PATH_TOKEN_RE.exec(text);
+    if (path) return path[0];
+  }
+
+  return identifierEnd !== -1 && isAsciiLetter(code) ? text.slice(index, identifierEnd) : null;
+}
+
 export function findIssueReferenceMatches(text: string): IssueReferenceMatch[] {
   if (!text) return [];
 
   const matches: IssueReferenceMatch[] = [];
-  let match: RegExpExecArray | null;
-  const re = new RegExp(ISSUE_REFERENCE_TOKEN_RE);
+  // Every start offset inside one alphanumeric run shares the run's end, and so
+  // whether a `-\d+` suffix follows it; measure both once per run.
+  let alphanumericRunEnd = 0;
+  let identifierEnd = -1;
+  let index = 0;
 
-  while ((match = re.exec(text)) !== null) {
-    const rawToken = match[0];
+  while (index < text.length) {
+    if (index >= alphanumericRunEnd) {
+      alphanumericRunEnd = index;
+      while (
+        alphanumericRunEnd < text.length
+        && isAsciiAlphanumeric(text.charCodeAt(alphanumericRunEnd))
+      ) {
+        alphanumericRunEnd += 1;
+      }
+      IDENTIFIER_SUFFIX_RE.lastIndex = alphanumericRunEnd;
+      identifierEnd = alphanumericRunEnd > index && IDENTIFIER_SUFFIX_RE.test(text)
+        ? IDENTIFIER_SUFFIX_RE.lastIndex
+        : -1;
+    }
+    const rawToken = readTokenAt(text, index, identifierEnd);
+    if (rawToken === null) {
+      index += 1;
+      continue;
+    }
+    const matchIndex = index;
+    index += rawToken.length;
+
     const cleanedToken = trimTrailingPunctuation(rawToken);
     if (!cleanedToken) continue;
 
+    // Only hrefs with an "issues" path segment can resolve; skip URL parsing
+    // (and its exception cost) for every other link-shaped token.
     const identifier =
       normalizeIssueIdentifier(cleanedToken)
-      ?? parseIssueReferenceHref(cleanedToken)?.identifier
+      ?? (ISSUES_SEGMENT_HINT_RE.test(cleanedToken) ? parseIssueReferenceHref(cleanedToken)?.identifier : null)
       ?? null;
 
     if (!identifier) continue;
 
-    const cleanedIndex = match.index;
     matches.push({
-      index: cleanedIndex,
+      index: matchIndex,
       length: cleanedToken.length,
       identifier,
       matchedText: cleanedToken,

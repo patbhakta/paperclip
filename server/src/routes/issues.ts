@@ -111,6 +111,7 @@ import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
+import { assertCommentBodyWithinLimit } from "../services/issues.js";
 import {
   accessService,
   agentService,
@@ -9379,6 +9380,8 @@ export function issueRoutes(
 
   router.patch("/issues/:id", validateIssueMutationBody(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
+    // Reject an oversized comment before any status or field mutation runs.
+    if (typeof req.body.comment === "string") assertCommentBodyWithinLimit(req.body.comment);
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -12153,6 +12156,8 @@ export function issueRoutes(
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
+    // Reject an oversized body before reopening, interrupting, or writing anything.
+    assertCommentBodyWithinLimit(req.body.body);
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
