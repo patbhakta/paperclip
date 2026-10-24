@@ -33,6 +33,7 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_CAUSE: Record<string, string> = {
   workspace_validation_failed: "Workspace validation failed",
   configuration_incomplete: "Configuration incomplete",
   execution_review_participant_recovery: "Review recovery stalled",
+  assignee_cross_company: "Cross-company assignee",
 };
 
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {

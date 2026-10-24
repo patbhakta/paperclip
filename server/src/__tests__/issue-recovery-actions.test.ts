@@ -25,6 +25,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
+import { assertAssignableAgent } from "../services/agent-assignability.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
@@ -384,6 +385,65 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(recoveryIssues).toHaveLength(0);
     expect(updatedIssue?.assigneeAgentId).toBe(coderId);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("escalates a cross-company assignee with a precise reason and unblock descriptor", async () => {
+    const { companyId, sourceIssue } = await seedCompany();
+    const otherCompanyId = randomUUID();
+    const foreignAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Co",
+      issuePrefix: `OC${otherCompanyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: foreignAgentId,
+      companyId: otherCompanyId,
+      name: "Foreign Lead",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(issues).set({ assigneeAgentId: foreignAgentId }).where(eq(issues.id, sourceIssue.id));
+    // The assignee's last execution ran (and expired) in its own company.
+    await seedHeartbeatRun({
+      companyId: otherCompanyId,
+      agentId: foreignAgentId,
+      runId: randomUUID(),
+      issueId: sourceIssue.id,
+      status: "failed",
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(updatedIssue?.status).toBe("blocked");
+    expect(updatedIssue?.assigneeAgentId).toBe(foreignAgentId);
+    expect(updatedIssue?.unblockDescriptor).toMatchObject({ owner: "board" });
+    const action = (updatedIssue?.unblockDescriptor as { action: string }).action;
+    expect(action).toContain("belongs to company Other Co");
+    expect(action).toContain("belongs to company Recovery Co");
+
+    const [recoveryAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(recoveryAction).toMatchObject({ companyId, cause: "assignee_cross_company", ownerType: "board" });
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
+    expect(comments.map((comment) => comment.body).join("\n")).toContain("invokable in its own company");
+
+    // Manual assignment rules are unchanged: a cross-company assignee is still rejected.
+    await expect(assertAssignableAgent(db, companyId, foreignAgentId)).rejects.toThrow(
+      "Assignee must belong to same company",
+    );
   });
 
   // Model the production payload: `requestedRef` keeps the operator spelling,
