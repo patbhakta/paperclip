@@ -19,7 +19,6 @@ import { waitForPendingRunFailureReports } from "../services/run-failure-report.
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHash, randomUUID } from "node:crypto";
 import { recordLegacyWorkspaceRestoreFailure, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
-import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
