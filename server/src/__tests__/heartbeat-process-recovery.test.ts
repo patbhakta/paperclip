@@ -102,6 +102,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
+import { issueService } from "../services/issues.js";
 import { runningProcesses } from "../adapters/index.ts";
 import {
   resolveDefaultAgentWorkspaceDir,
@@ -3205,6 +3207,61 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         cause: "legacy_execution_requires_reconciliation",
       }),
     ]);
+  });
+
+  it.each(["failed", "timed_out", "cancelled", "succeeded"] as const)(
+    "preserves external monitors after a %s terminal run across repeated sweeps",
+    async (runStatus) => {
+      const { issueId, companyId } = await seedStrandedIssueFixture({
+        status: "in_progress", runStatus,
+      });
+      for (const kind of ["external_job", "external_service"] as const) {
+        // Both due and future checks belong to the monitor scheduler.
+        for (const nextCheckAt of ["2026-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z"]) {
+          await db.update(issues).set({
+            monitorNextCheckAt: new Date(nextCheckAt),
+            executionPolicy: { mode: "normal", stages: [], monitor: {
+              kind, nextCheckAt, serviceName: "financebench-cpu-pilot", externalRef: "pid:366070",
+            } },
+          }).where(eq(issues.id, issueId));
+          const heartbeat = heartbeatService(db);
+          await heartbeat.reconcileStrandedAssignedIssues();
+          await heartbeat.reconcileStrandedAssignedIssues();
+          const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+          expect(issue?.status).toBe("in_progress");
+          expect(issue?.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt);
+          expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
+          expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toHaveLength(0);
+        }
+      }
+      expect(await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "pending"),
+      ))).toHaveLength(0);
+    },
+  );
+
+  it("resumes an automatically blocked issue with no dependency blockers and an external monitor", async () => {
+    const { issueId } = await seedStrandedIssueFixture({ status: "in_progress", runStatus: "failed" });
+    await db.update(issues).set({ status: "blocked", unblockDescriptor: null }).where(eq(issues.id, issueId));
+    const nextCheckAt = "2099-01-01T00:00:00.000Z";
+    const [blocked] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const policy = normalizeIssueExecutionPolicy({ mode: "normal", stages: [], monitor: {
+      kind: "external_job", nextCheckAt, serviceName: "financebench-cpu-pilot", externalRef: "pid:366070",
+    } });
+    // Use the same policy transition and assignee actor as the PATCH route.
+    const transition = applyIssueExecutionPolicyTransition({
+      issue: blocked!, policy, requestedStatus: "in_progress",
+      requestedAssigneePatch: {}, actor: { agentId: blocked!.assigneeAgentId },
+      monitorExplicitlyUpdated: true,
+    });
+    const resumed = await issueService(db).update(issueId, {
+      status: "in_progress", executionPolicy: policy, ...transition.patch,
+    });
+    expect(resumed?.status).toBe("in_progress");
+    expect(resumed?.unblockDescriptor).toBeNull();
+    expect(resumed?.monitorNextCheckAt?.toISOString()).toBe(nextCheckAt);
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]?.status).toBe("in_progress");
   });
 
   it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {

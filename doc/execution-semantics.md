@@ -711,9 +711,12 @@ Monitor policy lives under `executionPolicy.monitor` and includes:
 
 - `nextCheckAt`: when Paperclip should wake the assignee
 - `notes`: non-secret instructions for what the assignee should check
+- `kind`: optional `external_service` or `external_job` context
 - `serviceName`: optional non-secret external-service context
 - `externalRef`: optional external-service reference input; Paperclip treats it as secret-adjacent, redacts it before persistence/visibility, and omits it from activity and wake payloads
 - `timeoutAt`, `maxAttempts`, and `recoveryPolicy`: optional recovery hints for bounded waits
+
+A scheduled monitor remains a continuation path after the latest agent run fails, times out, or is cancelled. Stranded-run recovery leaves it to the monitor scheduler, including when the check is overdue. An external reference alone does not schedule a check.
 
 Monitors are not recurring intervals. When a monitor fires, Paperclip clears the scheduled monitor and queues an `issue_monitor_due` wake for the assignee. If the external service is still pending, the assignee must explicitly re-arm the monitor with a new `nextCheckAt`. If the issue moves to `done`, `cancelled`, an invalid status, or a human/unassigned owner, the monitor is cleared.
 

@@ -30,6 +30,14 @@ describe("issue validators", () => {
     expect(updateIssueSchema.parse({ visibility: "private" }).visibility).toBe("private");
     expect(updateIssueSchema.safeParse({ visibility: "secret" }).success).toBe(false);
   });
+  it.each(["external_job", "external_service"])("accepts a scheduled %s monitor on a status update", (kind) => {
+    expect(updateIssueSchema.safeParse({ status: "in_progress", executionPolicy: {
+      mode: "normal", stages: [], monitor: {
+        kind, nextCheckAt: "2099-01-01T00:00:00.000Z", serviceName: "pilot", externalRef: "pid:366070",
+      },
+    } }).success).toBe(true);
+  });
+
 
   it("validates the typed recovery display snapshot while retaining older metadata", () => {
     const metadata = { version: 1, sections: [{ rows: [{ type: "text", text: "Details" }] }] };

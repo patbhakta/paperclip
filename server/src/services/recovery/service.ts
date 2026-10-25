@@ -4536,6 +4536,13 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
+      // The monitor scheduler owns continuation independently of the last
+      // agent turn's outcome. A failed terminal run does not stop an external
+      // job or service; even an overdue check remains owned by the scheduler.
+      if (issue.status === "in_progress" && issue.monitorNextCheckAt) {
+        result.skipped += 1;
+        continue;
+      }
       if (issue.status !== "in_review" && !agentInvokable) {
         const classification = classifyContinuationFailure(latestRun);
         if (
